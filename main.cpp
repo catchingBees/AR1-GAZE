@@ -1,52 +1,59 @@
 #include <iostream>
-#include <vector>
-#include <string>
-using namespace std;
+#include <chrono>
+#include <thread>
+#include "../include/core/LockFreeQueue.h"
+#include "../include/core/SpatialGrid.h"
+#include "../include/network/P2PNode.h"
 
-struct TrailPoint {
-    float x;
-    float y;
-    float temperature;
-    string timestamp;
-    string color;
+struct SensorData {
+    Vector3 position;
+    float thermal_reading;
 };
 
-string getColor(float temp) {
-    if (temp < 50) return "blue";
-    else if (temp < 100) return "yellow";
-    else if (temp < 200) return "orange";
-    else return "red";
-}
-
-void addTrailPoint(vector<TrailPoint>& trail, float x, float y, float temp, string timestamp) {
-    TrailPoint point;
-    point.x = x;
-    point.y = y;
-    point.temperature = temp;
-    point.timestamp = timestamp;
-    point.color = getColor(temp);
-    trail.push_back(point);
-}
-
-void printTrail(vector<TrailPoint>& trail) {
-    for (auto& point : trail) {
-        cout << "Position: (" << point.x << ", " << point.y << ")" << endl;
-        cout << "Temperature: " << point.temperature << "C" << endl;
-        cout << "Recorded: " << point.timestamp << endl;
-        cout << "Trail Color: " << point.color << endl;
-        cout << "---" << endl;
-    }
-}
-
 int main() {
-    vector<TrailPoint> trail;
+    std::cout << "[AR1-GAZE CORE] Initializing Visor Systems..." << std::endl;
 
-    addTrailPoint(trail, 1.0, 2.0, 45.0, "1 minute ago");
-    addTrailPoint(trail, 2.0, 3.0, 95.0, "2 minutes ago");
-    addTrailPoint(trail, 3.0, 4.0, 150.0, "3 minutes ago");
-    addTrailPoint(trail, 4.0, 5.0, 250.0, "4 minutes ago");
+    LockFreeQueue<SensorData, 1024> sensor_queue;
+    SpatialGrid spatial_map;
+    P2PNode mesh_network(1);
 
-    printTrail(trail);
+    mesh_network.start();
+    std::cout << "[SYSTEM] P2P Mesh Node Online." << std::endl;
 
+    std::atomic<bool> system_running{ true };
+    std::thread sensor_thread([&]() {
+        while (system_running) {
+            SensorData incoming_data = { {10.0f, 0.0f, -5.0f}, 450.0f };
+            sensor_queue.push(incoming_data);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        }
+        });
+
+    std::cout << "[SYSTEM] Entering Main Execution Loop." << std::endl;
+    int tick_count = 0;
+
+    while (system_running && tick_count < 100) {
+        SensorData latest_data;
+        while (sensor_queue.pop(latest_data)) {
+            Breadcrumb new_crumb;
+            new_crumb.node_id = 1;
+            new_crumb.position = latest_data.position;
+            new_crumb.max_temperature = latest_data.thermal_reading;
+
+            spatial_map.addBreadcrumb(new_crumb);
+            std::vector<Breadcrumb> to_send = { new_crumb };
+            mesh_network.broadcastBreadcrumbs(to_send);
+        }
+        tick_count++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+
+    system_running = false;
+    if (sensor_thread.joinable()) {
+        sensor_thread.join();
+    }
+    mesh_network.stop();
+
+    std::cout << "[SYSTEM] Visor Offline. Graceful shutdown complete." << std::endl;
     return 0;
 }
